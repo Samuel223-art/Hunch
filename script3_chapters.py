@@ -15,46 +15,49 @@ def scrape_chapter_images():
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
     )
-
+    
     active_novels = db.query_documents("novels", "status", "EQUAL", "metadata_scraped")
-
+    
     if active_novels is None:
         print("[Chapters] Database query failed. Aborting.")
         return
-
+        
     if not active_novels:
         print("[Chapters] No novels ready for chapter scraping.")
         return
 
+    # Limit to processing 10 novels per run
+    active_novels = active_novels[:10]
+    print(f"[Chapters] Processing batch of {len(active_novels)} novels.")
+
     for novel in active_novels:
         novel_id = novel["_id"]
         print(f"[Chapters] Processing Novel: {novel_id}")
-
+        
         chapters = db.query_documents(f"novels/{novel_id}/chapters", "status", "EQUAL", "pending")
-
+            
         if chapters is None:
             print(f"  [Error] Failed to query chapters for {novel_id}. Skipping.")
             continue
-
+            
         if not chapters:
             print(f"  [Info] All chapters for {novel_id} are already processed.")
             db.save_document("novels", novel_id, {"status": "completed"}, merge=True)
             continue
-
+            
         print(f"  [Chapters] Found {len(chapters)} pending chapters.")
-
-        processed_successfully = 0
+        
         for ch in chapters:
             ch_id = ch["_id"]
             ch_url = ch["url"]
             print(f"    [Scraping] {ch_id} -> {ch_url}")
-
+            
             try:
                 ch_res = scraper.get(ch_url, timeout=15)
                 if ch_res.status_code != 200:
                     print(f"      [Warning] Failed HTTP {ch_res.status_code}")
                     continue
-
+                    
                 ch_soup = BeautifulSoup(ch_res.text, 'html.parser')
                 img_srcs = []
                 for img in ch_soup.find_all('img'):
@@ -66,7 +69,7 @@ def scrape_chapter_images():
                         if "cdn" in src.lower() or "asura-images" in src.lower() or re.search(r'\.(webp|jpg|jpeg|png)(\?|$)', src, re.IGNORECASE):
                             if src not in img_srcs:
                                 img_srcs.append(src)
-
+                
                 if img_srcs:
                     pages_map = {str(i + 1): img_url for i, img_url in enumerate(img_srcs)}
                     ch_update = {
@@ -75,18 +78,16 @@ def scrape_chapter_images():
                         "status": "completed",
                         "updated_at": int(time.time())
                     }
-                    if db.save_document(f"novels/{novel_id}/chapters", ch_id, ch_update, merge=True):
-                        processed_successfully += 1
-                        print(f"      [Success] Saved {len(img_srcs)} pages.")
+                    db.save_document(f"novels/{novel_id}/chapters", ch_id, ch_update, merge=True)
+                    print(f"      [Success] Saved {len(img_srcs)} pages.")
                 else:
                     print(f"      [Warning] No images found.")
-
+                    
                 time.sleep(1.5)
             except Exception as e:
                 print(f"      [Error] {e}")
-
-        # Only mark novel as completed if we processed all pending chapters
-        # Re-query to be sure
+        
+        # Check if all chapters are done
         remaining = db.query_documents(f"novels/{novel_id}/chapters", "status", "EQUAL", "pending")
         if remaining is not None and len(remaining) == 0:
             db.save_document("novels", novel_id, {"status": "completed"}, merge=True)
@@ -94,3 +95,4 @@ def scrape_chapter_images():
 
 if __name__ == "__main__":
     scrape_chapter_images()
+    
